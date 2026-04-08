@@ -1,0 +1,4 @@
+system,train,test,accuracy,macro_f1,uar
+SVM,EMO-DB,RAVDESS,0.1843,0.0968,0.1711
+SVM,RAVDESS,EMO-DB,0.2766,0.1708,0.2513
+SVM-Merged,EMO-DB+RAVDESS,20%-each,0.6975,0.6879,0.6861

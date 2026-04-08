@@ -126,6 +126,11 @@ def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
     chroma = librosa.feature.chroma_stft(y=audio, sr=sr, n_chroma=12)
     features.extend(float(np.mean(c)) for c in chroma)
 
+    # 11. Chroma Deviation (1) — std across chroma bins, mean over frames
+    # This is pyAudioAnalysis feature #34 — was missing from fallback
+    chroma_dev = float(np.mean(np.std(chroma, axis=0)))
+    features.append(chroma_dev)
+
     assert len(features) == 34, f"Expected 34 features, got {len(features)}"
     return np.array(features, dtype=np.float32)
 
@@ -151,6 +156,7 @@ class PyAudioFeatureExtractor:
            "SpectralFlux", "SpectralRolloff"]
         + [f"MFCC_{i+1}" for i in range(13)]
         + [f"Chroma_{i+1}" for i in range(12)]
+        + ["ChromaDeviation"] 
     )
 
     def __init__(

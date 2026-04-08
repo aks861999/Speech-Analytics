@@ -160,7 +160,6 @@ class SentimentFusion:
         self._lr_model = LogisticRegression(
             C=C,
             max_iter=max_iter,
-            multi_class="multinomial",
             solver="lbfgs",
             random_state=42,
         )

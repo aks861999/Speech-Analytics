@@ -1,2 +1,8 @@
 .env
 data/
+*/__pycache__/*
+*/.ipynb_checkpoints/*
+notebooks/mlruns/
+*.zip
+.ipynb_checkpoints/*
+*.log

@@ -38,6 +38,27 @@ from src.utils import get_logger, load_config
 
 logger = get_logger(__name__)
 
+# ── Pipeline log file handler ──────────────────────────────────────────────
+import logging as _logging
+
+_log_formatter = _logging.Formatter(
+    "[%(asctime)s] %(levelname)-8s %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+_file_handler = _logging.FileHandler(
+    _PROJECT_ROOT / "pipeline.log",   # saves to Masters-Thesis-Voice-AI/pipeline.log
+    mode="a",                          # append — preserves logs across restarts
+    encoding="utf-8",
+)
+_file_handler.setFormatter(_log_formatter)
+_file_handler.setLevel(_logging.DEBUG)  # capture DEBUG and above to file
+
+# Attach to root logger so ALL src.* module logs are captured
+_logging.getLogger().addHandler(_file_handler)
+_logging.getLogger().setLevel(_logging.DEBUG)
+logger.info("Pipeline log started → %s", _PROJECT_ROOT / "pipeline.log")
+
 # ── Graceful imports ───────────────────────────────────────────────────────
 try:
     import gradio as gr
@@ -74,6 +95,70 @@ _asr: Optional["FasterWhisperASR"] = None
 _text_clf: Optional["GermanSentimentClassifier"] = None
 _feat_extractor: Optional["PyAudioFeatureExtractor"] = None
 _fusion = SentimentFusion(text_weight=0.75)
+
+
+
+def _build_sentiment_plot(history: list):
+    """Build a plotly figure — thread-safe and natively supported by gr.Plot in Gradio 5.x."""
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+
+    if history:
+        import pandas as pd
+        df = pd.DataFrame(history)
+        times  = df["time"].tolist()
+        scores = df["sentiment_score"].tolist()
+
+        # Positive fill area
+        fig.add_trace(go.Scatter(
+            x=times, y=[max(0.0, s) for s in scores],
+            fill="tozeroy", fillcolor="rgba(34,197,94,0.12)",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+
+        # Negative fill area
+        fig.add_trace(go.Scatter(
+            x=times, y=[min(0.0, s) for s in scores],
+            fill="tozeroy", fillcolor="rgba(239,68,68,0.12)",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+
+        # Main sentiment line
+        fig.add_trace(go.Scatter(
+            x=times, y=scores,
+            mode="lines+markers",
+            line=dict(color="#4f98a3", width=2),
+            marker=dict(size=6, color="#4f98a3"),
+            name="Sentiment Score",
+            hovertemplate="Time: %{x}s<br>Score: %{y:.3f}<extra></extra>",
+        ))
+
+    # Zero baseline
+    fig.add_hline(y=0, line_dash="dash", line_color="#555", line_width=1)
+
+    fig.update_layout(
+        paper_bgcolor="rgba(28,27,25,1)",
+        plot_bgcolor="rgba(28,27,25,1)",
+        font=dict(color="#cdccca", size=12),
+        xaxis=dict(
+            title="Time (seconds)",
+            gridcolor="#393836",
+            zerolinecolor="#393836",
+            color="#cdccca",
+        ),
+        yaxis=dict(
+            title="Sentiment Score",
+            range=[-1.05, 1.05],
+            gridcolor="#393836",
+            zerolinecolor="#393836",
+            color="#cdccca",
+        ),
+        margin=dict(l=55, r=15, t=15, b=50),
+        height=280,
+        showlegend=False,
+    )
+    return fig
 
 
 def _init_models(config: dict) -> None:
@@ -287,7 +372,7 @@ def process_audio_chunk(
     alert_html = _build_alert_html(alert_active, predicted_class, recovery)
 
     # Plot data
-    plot_df = pd.DataFrame(history)
+    plot_fig = _build_sentiment_plot(history)
 
     # Fusion scores for transparency panel
     fusion_scores = {
@@ -301,7 +386,7 @@ def process_audio_chunk(
     return (
         confidence_pct,
         transcript_buffer,
-        plot_df,
+        plot_fig,
         alert_html,
         alert_log,
         fusion_scores,
@@ -421,13 +506,11 @@ def _empty_output(stream_state: dict) -> tuple:
     """Return no-op outputs when no audio is available."""
     import pandas as pd
     history = stream_state.get("history", [])
-    plot_df = pd.DataFrame(history) if history else pd.DataFrame(
-        {"time": [], "sentiment_score": []}
-    )
+    plot_fig = _build_sentiment_plot(history)
     return (
         {"NEUTRAL": 100.0},
         stream_state.get("transcript_buffer", ""),
-        plot_df,
+        plot_fig,
         _build_alert_html(False, "neutral"),
         stream_state.get("alert_log", ""),
         {},
@@ -488,7 +571,7 @@ def process_demo_step(
 
     confidence_pct = {k.upper(): round(v * 100, 1) for k, v in fused_proba.items()}
     alert_html = _build_alert_html(alert_active, predicted_class, recovery)
-    plot_df = pd.DataFrame(history)
+    plot_fig = _build_sentiment_plot(history)
     fusion_scores = {
         "text": text_proba,
         "acoustic": acoustic_proba,
@@ -500,7 +583,7 @@ def process_demo_step(
     return (
         confidence_pct,
         step["transcript"],
-        plot_df,
+        plot_fig,
         alert_html,
         alert_log,
         fusion_scores,
@@ -539,22 +622,10 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
     # Pre-load models
     _init_models(config)
 
-    css = """
-    .gradio-container { font-family: 'Inter', sans-serif; }
-    .sentiment-positive { color: #22c55e; font-weight: bold; }
-    .sentiment-negative { color: #ef4444; font-weight: bold; }
-    .sentiment-neutral  { color: #94a3b8; font-weight: bold; }
-    .header-bar {
-        background: linear-gradient(90deg, #1e3a8a, #1d4ed8);
-        color: white; padding: 20px 30px;
-        border-radius: 10px; margin-bottom: 20px;
-    }
-    """
+
 
     with gr.Blocks(
         title="Speech Analytics Dashboard — Allianz Thesis Prototype",
-        css=css,
-        theme=gr.themes.Base(),
     ) as demo:
 
         # ── Header ─────────────────────────────────────────────────────────
@@ -599,7 +670,6 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 audio_input = gr.Audio(
                     sources=["microphone"],
                     streaming=True,
-                    stream_every=stream_every,
                     label="🎤 Microphone Input",
                     visible=False,
                     type="numpy",
@@ -663,14 +733,8 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
             with gr.Column(scale=2):
                 gr.Markdown("### 📈 Sentiment History")
 
-                sentiment_plot = gr.LinePlot(
+                sentiment_plot = gr.Plot(
                     label="Sentiment Trend (positive_prob − negative_prob)",
-                    x="time",
-                    y="sentiment_score",
-                    x_title="Time (seconds)",
-                    y_title="Sentiment Score",
-                    y_lim=[-1.0, 1.0],
-                    height=280,
                 )
 
                 fusion_scores_display = gr.JSON(
@@ -722,19 +786,20 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 fusion_scores_display,
                 stream_state,
             ],
+            stream_every=3.0, 
         )
 
         # Demo mode: next step button
         def handle_demo_next(idx, state):
             outputs = process_demo_step(idx, state)
-            confidence_pct, transcript, plot_df, alert_html, log, scores, new_state = outputs
+            confidence_pct, transcript, plot_fig, alert_html, log, scores, new_state = outputs
             step_info = DEMO_SEQUENCE[idx % len(DEMO_SEQUENCE)]
             status = f"Step {(idx % len(DEMO_SEQUENCE)) + 1}/{len(DEMO_SEQUENCE)}: {step_info['description']}"
             new_idx = (idx + 1) % len(DEMO_SEQUENCE)
             return (
                 confidence_pct,
                 transcript,
-                plot_df,
+                plot_fig,
                 alert_html,
                 log,
                 scores,
@@ -769,7 +834,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 "transcript_buffer": "",
             }
             import pandas as pd
-            empty_plot = pd.DataFrame({"time": [], "sentiment_score": []})
+            empty_plot = _build_sentiment_plot([]) 
             return (
                 {"NEUTRAL": 100.0},
                 "",
@@ -818,11 +883,28 @@ def main():
 
     dashboard = build_dashboard(config)
     logger.info("Launching Gradio dashboard on http://%s:%d", host, port)
+
+    css = """
+    .gradio-container { font-family: 'Inter', sans-serif; }
+    .sentiment-positive { color: #22c55e; font-weight: bold; }
+    .sentiment-negative { color: #ef4444; font-weight: bold; }
+    .sentiment-neutral  { color: #94a3b8; font-weight: bold; }
+    .header-bar {
+        background: linear-gradient(90deg, #1e3a8a, #1d4ed8);
+        color: white; padding: 20px 30px;
+        border-radius: 10px; margin-bottom: 20px;
+    }
+    """
+
+
+
+
     dashboard.launch(
+        css=css,
+        theme=gr.themes.Base(),
         server_name=host,
         server_port=port,
         share=False,
-        show_api=False,
     )
 
 

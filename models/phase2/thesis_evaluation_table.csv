@@ -1,0 +1,9 @@
+System,Dataset,Accuracy,Macro-F1,Notes
+Acoustic-only SVM,EMO-DB (7-class),0.8504672897196262,0.7858040008577643,Phase 1 baseline
+Acoustic-only SVM,EMO-DB→RAVDESS,—,—,Cross-corpus (see NB03)
+Text-only German BERT,EMO-DB (3-class),0.13271028037383178,0.0781078107810781,Text branch only
+Fusion 60/40,EMO-DB (3-class),—,—,Ablation
+Fusion 75/25 (Yurtay),EMO-DB (3-class),—,—,Primary system
+Fusion 90/10,EMO-DB (3-class),—,—,Ablation
+Fusion LR meta-learner,EMO-DB (3-class),0.7272727272727273,0.5522875816993463,Learned weights
+Fusion 75/25,EMO-DB→RAVDESS,—,—,Cross-corpus 3-class

@@ -1,0 +1,41 @@
+# ── Audio Processing ──────────────────────────────────────────────────────────
+librosa==0..11.0
+soundfile==0.12.1
+audiomentations==0.36.0
+# pyAudioAnalysis must be installed from GitHub for Python 3.12 compatibility:
+# pip install git+https://github.com/tyiannak/pyAudioAnalysis.git
+
+# ── Classical ML ──────────────────────────────────────────────────────────────
+scikit-learn==1.5.2
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.1
+joblib==1.4.2
+
+# ── Deep Learning ─────────────────────────────────────────────────────────────
+torch==2.3.1
+torchaudio==2.3.1
+transformers==4.41.2
+datasets==2.19.2
+sentencepiece==0.2.0
+accelerate==0.30.1
+
+# ── ASR (Python 3.12 compatible — do NOT use openai-whisper) ──────────────────
+faster-whisper==1.0.3
+
+# ── Experiment Tracking ───────────────────────────────────────────────────────
+mlflow==2.13.2
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+gradio==5.4.0
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib==3.9.0
+seaborn==0.13.2
+plotly==5.22.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+tqdm==4.66.4
+pyyaml==6.0.1
+click==8.1.7

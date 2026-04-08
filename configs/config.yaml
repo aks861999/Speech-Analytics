@@ -1,0 +1,124 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Speech Analytics System for Emotions in Employee–Customer Interactions
+# Allianz Thesis Prototype — Akash Biswas
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Data Paths ────────────────────────────────────────────────────────────────
+data:
+  emodb_raw:          "data/emodb/raw"
+  emodb_processed:    "data/emodb/processed/emodb_16khz"
+  emodb_manifest:     "data/emodb/processed/emodb_manifest.csv"
+  emodb_features_overlap:    "data/emodb/features/emodb_34features.arff"
+  emodb_features_nooverlap:  "data/emodb/features/emodb_34features_nooverlap.arff"
+
+  ravdess_raw:        "data/ravdess/raw"
+  ravdess_processed:  "data/ravdess/processed/ravdess_speech_16khz"
+  ravdess_manifest:   "data/ravdess/processed/ravdess_manifest.csv"
+  ravdess_features_overlap:    "data/ravdess/features/ravdess_34features.arff"
+  ravdess_features_nooverlap:  "data/ravdess/features/ravdess_34features_nooverlap.arff"
+
+  emodb_transcripts:  "data/emodb/processed/emodb_transcripts.csv"
+  ravdess_transcripts: "data/ravdess/processed/ravdess_transcripts.csv"
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+preprocessing:
+  target_sr: 16000
+  mono: true
+  augmentation:
+    gaussian_noise:
+      min_amplitude: 0.001
+      max_amplitude: 0.015
+      p: 0.5
+    time_stretch:
+      min_rate: 0.9
+      max_rate: 1.1
+      p: 0.3
+
+# ── Feature Extraction ────────────────────────────────────────────────────────
+feature_extraction:
+  # Short-term windows
+  st_win_overlap:    0.05    # 50ms window
+  st_step_overlap:   0.025   # 25ms step  → 50% overlap
+  st_win_nooverlap:  0.05    # 50ms window
+  st_step_nooverlap: 0.05    # 50ms step  → 0% overlap
+
+  # Mid-term windows (for pyAudioAnalysis aggregation)
+  mt_win:  1.0
+  mt_step: 1.0
+
+  n_features: 34   # 13 MFCC + 1 ZCR + 1 Energy + 1 EnergyEntropy + 5 Spectral + 12 Chroma
+
+# ── Classifier Hyperparameter Grids ──────────────────────────────────────────
+classifiers:
+  random_state: 42
+  cv_folds: 10
+
+  svm:
+    C: [0.001, 0.01, 0.5, 1.0, 10.0, 20.0]
+    kernel: ["rbf"]
+    probability: true
+
+  knn:
+    n_neighbors: [1, 3, 5, 7, 9, 11, 13, 15]
+    metric: ["euclidean", "minkowski"]
+
+  random_forest:
+    n_estimators: [10, 25, 50, 100, 200, 500]
+    random_state: [42]
+
+  gradient_boosting:
+    n_estimators: [10, 25, 50, 100, 200, 500]
+    learning_rate: [0.1]
+    max_depth: [3]
+    random_state: [42]
+
+  extra_trees:
+    n_estimators: [10, 25, 50, 100, 200, 500]
+    random_state: [42]
+
+# ── ASR ───────────────────────────────────────────────────────────────────────
+asr:
+  model_size: "medium"     # 769M params; use "base" for CPU-only testing
+  device: "auto"           # "cuda" | "cpu" | "auto"
+  compute_type: "float16"  # "int8" for CPU fallback
+  language_emodb: "de"
+  language_ravdess: "en"
+  task: "transcribe"
+  word_timestamps: false
+  beam_size: 5
+  batch_size: 8
+
+# ── Text Classifier ───────────────────────────────────────────────────────────
+text_classifier:
+  german_model: "oliverguhr/german-sentiment-bert"
+  english_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+  batch_size: 32
+  device: "auto"
+
+# ── Fusion ────────────────────────────────────────────────────────────────────
+fusion:
+  text_weight: 0.75
+  acoustic_weight: 0.25
+  ablation_weights: [0.60, 0.75, 0.90]
+  lr_C: 1.0
+  lr_max_iter: 1000
+
+# ── MLflow ────────────────────────────────────────────────────────────────────
+mlflow:
+  tracking_uri: "sqlite:///models/mlruns/mlflow.db"
+  artifact_root: "./models/mlruns/artifacts"
+  experiment_name: "speech-emotion-allianz"
+
+# ── Gradio Dashboard ──────────────────────────────────────────────────────────
+gradio:
+  stream_every: 3.0          # seconds per audio chunk
+  alert_threshold: 0.5       # P(negative) threshold (used only for reference; state-change is primary)
+  sentiment_score_positive_threshold: 0.3
+  sentiment_score_negative_threshold: -0.3
+  server_port: 7860
+  server_name: "0.0.0.0"
+
+# ── Models ────────────────────────────────────────────────────────────────────
+models:
+  phase1_dir: "models/phase1"
+  phase2_dir: "models/phase2"

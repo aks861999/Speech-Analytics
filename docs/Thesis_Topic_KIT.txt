@@ -1,0 +1,26 @@
+Designing a Speech Analytics System for Emotions in Employee-Customer Interactions
+Type:Master Thesis
+Date:Open
+Supervisor:
+Daniel Faisst
+
+Overview
+In online customer service, voice recordings provide valuable insights into interactions between employees and customers. Speech analytics - integrating automatic speech recognition, natural language processing (NLP), and acoustic analysis - facilitates the analysis of voice recordings.
+
+Research indicates that in the faceless environment of online customer service, the exchange of genuine emotions acts as the "social glue" that humanizes the interface, transforming a pure information exchange into a meaningful experience that has strong influence on a customer's perception of the service.  Leveraging speech analytics, it is possible to analyze emotions and their impact on employee-customer interactions. In the thesis project, the following research question is addressed: 
+
+How should a speech analytics system for the analysis of emotions in employee–customer interactions be designed?
+
+Goal of the Thesis: 
+The thesis focuses on the latest methodologies for investigating customer-employee interactions through speech analytics. The findings will help evaluate where an AI-based prototype can be integrated into customer service. The student will:
+
+Analyze state-of-the-art speech analytics frameworks in customer service
+Collect requirements and conceptualize a speech analytics system
+Implement the speech analytics system and perform an evaluation
+The thesis is done in cooperation with Allianz.
+
+Recommended skills:
+Strong programming skills and experience with data analysis software (i.e., Python, R)
+Familiarity with data science as natural language processing and Generative AI (e.g., clustering, segmentation)
+Strong time management and communication skills
+Strong analytical and English skills

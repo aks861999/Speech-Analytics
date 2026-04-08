@@ -1,0 +1,95 @@
+﻿This is a primary plan for the prototype
+
+
+For your prototype to send to the mentor, here's the exact dataset strategy:
+
+
+**Start with EMO-DB only.**
+
+
+Here's the reasoning, grounded directly in the papers and thesis context:
+
+
+1. **It's German.** The thesis is done with Allianz — a German insurance company. Using the only major German-language emotional speech corpus available is an immediate, concrete signal to the mentor that you understand the deployment context. Madanian et al. already used it as one of their three benchmarks, so it's academically established.
+
+
+2. **It's tiny and fast.** 535 files means you can have a working pipeline running in hours, not days. For a prototype you're sending to a professor to get the thesis approved, speed of delivery matters more than scale.
+
+
+3. **It maps cleanly to the thesis goal.** The thesis asks how a system should be *designed* for employee-customer interactions. EMO-DB's 7 emotions (anger, boredom, disgust, fear, happiness, sadness, neutral) cover the full range of states relevant to an Allianz call — an angry customer, a bored agent, a fearful caller reporting a claim, neutral information exchange.
+
+
+4. **You can replicate Madanian et al.'s exact pipeline on it.** They already benchmarked EMO-DB with SVM, KNN, RF, Gradient Boosting, Extra Trees using PyAudioAnalysis's 34 features. Your prototype can reproduce their results, then extend toward the call-center framing from Yurtay et al.
+
+
+**Then immediately add RAVDESS as a second dataset** to demonstrate cross-corpus evaluation — which is what makes the prototype feel like a *system design* contribution rather than just a classifier.
+
+
+---
+
+
+### Prototype Architecture — Directly Derived from Both Papers
+
+
+This is the minimal viable system that faithfully reflects both references:
+
+
+**Phase 1 — Replicate Madanian et al. on EMO-DB + RAVDESS:**
+```
+Audio (.wav, 16kHz mono)
+    │
+    └──► PyAudioAnalysis: extract 34 features
+         (MFCC, Energy, ZCR, Entropy of Energy, 
+          Chroma, Spectral Centroid, Spectral Entropy)
+              │
+              ├── SVM (C = 0.5–20, overlapping window 50ms/25ms step)
+              ├── Random Forest (N=100)
+              ├── Gradient Boosting (100 stages)
+              └── Extra Trees (N=100)
+                        │
+                   Emotion Label (7-class)
+```
+
+
+**Phase 2 — Add Yurtay et al.'s insight (collapse + text branch):**
+
+
+Yurtay's key finding was that **3-class sentiment (Positive/Negative/Neutral) is more actionable than 7-class emotion** for a call center operator, and that **text carries 75% of the signal**. Map your EMO-DB labels:
+- Positive → happiness
+- Negative → anger, disgust, fear, boredom, sadness  
+- Neutral → neutral
+
+
+Then add Whisper (for ASR transcription) → simple BERT-based sentiment classifier on the transcript. Fuse at 75/25 ratio as Yurtay demonstrated.
+
+
+**Phase 3 — Frame it as system design (the actual thesis question):**
+
+
+This is what separates a prototype from a demo. Add a thin layer that shows *where in the call workflow* the emotion signal would be consumed — for Allianz this means: real-time alert to the agent dashboard when the customer sentiment turns negative. Even a mock Gradio UI showing "Customer: NEGATIVE ↓ | Agent: NEUTRAL" is enough to make the system design argument concrete to the mentor.
+
+
+---
+
+
+### Exact Datasets to Download Now
+
+
+| Dataset | Files | Access | Why |
+|---|---|---|---|
+| **EMO-DB** | 535 | `emodb.bilderbar.info` (free) or HuggingFace | German, Madanian baseline, 7 emotions |
+| **RAVDESS** | 2,452 | Zenodo `10.5281/zenodo.1188976` (free) | Cross-corpus eval, Madanian baseline |
+
+IEMOCAP remains valuable for the full thesis (dyadic structure), but requires registration with USC SAIL and the 12-hour corpus is too large for a quick prototype. Skip it for now.
+
+
+---
+
+
+### One Sentence for Your Cover Email to the Mentor
+
+
+> "The prototype uses EMO-DB (German-language emotional speech corpus) and RAVDESS to build and cross-evaluate a hybrid acoustic-text emotion classification pipeline, replicating the Madanian et al. (2022) baseline and extending it with the fusion architecture validated by Yurtay et al. (2024) on real call center data — framed as a system design for real-time emotion analytics in the Allianz customer service context."
+
+
+That sentence shows you've read both papers, understood the gap they leave open (real-world German deployment), and have a concrete plan to address it.

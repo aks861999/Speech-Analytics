@@ -306,6 +306,102 @@ class EnglishSentimentClassifier(GermanSentimentClassifier):
         return results
 
 
+
+
+
+class GermanEmotionClassifier:
+    """
+    7-class emotion classifier for German speech transcripts.
+    Pipeline: German text → Helsinki translation → English emotion classifier.
+    Uses j-hartmann/emotion-english-distilroberta-base (7-class).
+    Maps to 3-class: positive/negative/neutral via LabelMapper.
+    """
+    EMOTION_3CLASS_MAP = {
+        'joy':      'positive',
+        'surprise': 'positive',
+        'anger':    'negative',
+        'disgust':  'negative',
+        'fear':     'negative',
+        'sadness':  'negative',
+        'neutral':  'neutral',
+    }
+
+    def __init__(self, device: str = 'auto'):
+        if not _TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers required.")
+
+        if device == 'auto':
+            try:
+                import torch
+                self._device = 0 if torch.cuda.is_available() else -1
+            except ImportError:
+                self._device = -1
+        else:
+            self._device = 0 if device == 'cuda' else -1
+
+        logger.info("Loading Helsinki DE→EN translator...")
+        from transformers import MarianMTModel, MarianTokenizer
+        self._tokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-de-en")
+        self._translator = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-de-en")
+        if self._device == 0:
+            self._translator = self._translator.cuda()
+
+        logger.info("Loading emotion classifier: j-hartmann/emotion-english-distilroberta-base")
+        self._emotion_clf = hf_pipeline(
+            "text-classification",
+            model="j-hartmann/emotion-english-distilroberta-base",
+            return_all_scores=True,
+            device=self._device,
+        )
+        logger.info("GermanEmotionClassifier ready.")
+
+    def predict_proba(self, text: str) -> dict[str, float]:
+        """Returns dict with keys: positive, negative, neutral."""
+        if not text or not text.strip():
+            return {'positive': 1/3, 'negative': 1/3, 'neutral': 1/3}
+        try:
+
+            inputs = self._tokenizer(
+            [text[:512]], return_tensors="pt", padding=True, truncation=True
+        )
+            if self._device == 0:
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+            translated_tokens = self._translator.generate(**inputs)
+            translated = self._tokenizer.decode(
+                translated_tokens[0], skip_special_tokens=True
+            )
+
+
+
+            
+            raw = self._emotion_clf(translated[:512])
+            # Unwrap nesting: pipeline returns [[{...},...]] or [{...},...]
+            if isinstance(raw[0], list):
+                scores = raw[0]   # batch wrapper present
+            else:
+                scores = raw      # already flat list of dicts
+
+            collapsed = {'positive': 0.0, 'negative': 0.0, 'neutral': 0.0}
+            
+            for item in scores:
+                three = self.EMOTION_3CLASS_MAP.get(item['label'].lower(), 'neutral')
+                collapsed[three] += float(item['score'])
+            total = sum(collapsed.values())
+            if total > 0:
+                collapsed = {k: v / total for k, v in collapsed.items()}
+            return collapsed
+        except Exception as exc:
+            logger.error("GermanEmotionClassifier failed: %s", exc)
+            return {'positive': 1/3, 'negative': 1/3, 'neutral': 1/3}
+
+    def predict_batch(self, texts: list[str], batch_size: int = 32) -> list[dict[str, float]]:
+        return [self.predict_proba(t) for t in texts]
+
+
+
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Factory
 # ─────────────────────────────────────────────────────────────────────────────

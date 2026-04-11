@@ -17,7 +17,6 @@ Gradio 5.x streaming note:
 """
 
 from __future__ import annotations
-
 import datetime
 import logging
 import os
@@ -25,21 +24,24 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-
 import numpy as np
-
+import pandas as pd
+import logging as _logging
+from src.fusion import SentimentFusion
+from src.utils import get_logger, load_config
+import gradio as gr
+import plotly.graph_objects as go
+import librosa
 # ── Add project root to sys.path ──────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.fusion import SentimentFusion
-from src.utils import get_logger, load_config
+
 
 logger = get_logger(__name__)
 
 # ── Pipeline log file handler ──────────────────────────────────────────────
-import logging as _logging
 
 _log_formatter = _logging.Formatter(
     "[%(asctime)s] %(levelname)-8s %(name)s — %(message)s",
@@ -60,6 +62,7 @@ _logging.getLogger().setLevel(_logging.DEBUG)
 logger.info("Pipeline log started → %s", _PROJECT_ROOT / "pipeline.log")
 
 # ── Graceful imports ───────────────────────────────────────────────────────
+
 try:
     import gradio as gr
 
@@ -75,7 +78,7 @@ except Exception:
     _ASR_AVAILABLE = False
 
 try:
-    from src.text_classifier import GermanSentimentClassifier
+    from src.text_classifier import GermanEmotionClassifier
     _TEXT_CLF_AVAILABLE = True
 except Exception:
     _TEXT_CLF_AVAILABLE = False
@@ -92,20 +95,23 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _asr: Optional["FasterWhisperASR"] = None
-_text_clf: Optional["GermanSentimentClassifier"] = None
+_text_clf: Optional["GermanEmotionClassifier"] = None
 _feat_extractor: Optional["PyAudioFeatureExtractor"] = None
 _fusion = SentimentFusion(text_weight=0.75)
+_svm = None           # loaded from models/phase1/
+_svm_scaler = None    # loaded from models/phase1/
+_svm_classes = None
 
 
 
 def _build_sentiment_plot(history: list):
     """Build a plotly figure — thread-safe and natively supported by gr.Plot in Gradio 5.x."""
-    import plotly.graph_objects as go
+    
 
     fig = go.Figure()
 
     if history:
-        import pandas as pd
+       
         df = pd.DataFrame(history)
         times  = df["time"].tolist()
         scores = df["sentiment_score"].tolist()
@@ -163,7 +169,8 @@ def _build_sentiment_plot(history: list):
 
 def _init_models(config: dict) -> None:
     """Lazy-initialise ML models once at app startup."""
-    global _asr, _text_clf, _feat_extractor
+    global _asr, _text_clf, _feat_extractor, _svm, _svm_scaler, _svm_classes
+
 
     asr_cfg = config.get("asr", {})
     txt_cfg = config.get("text_classifier", {})
@@ -180,13 +187,45 @@ def _init_models(config: dict) -> None:
 
     if _TEXT_CLF_AVAILABLE and _text_clf is None:
         try:
-            _text_clf = GermanSentimentClassifier(device="auto")
+            _text_clf = GermanEmotionClassifier(device='auto')
             logger.info("Text classifier loaded.")
         except Exception as e:
             logger.warning("Text classifier load failed: %s", e)
 
     if _FEAT_EXT_AVAILABLE and _feat_extractor is None:
         _feat_extractor = PyAudioFeatureExtractor(target_sr=16000)
+
+    import joblib
+    global _svm, _svm_scaler, _svm_classes
+    _MODEL_DIR   = _PROJECT_ROOT / 'models' / 'phase1'
+    _svm_path    = _MODEL_DIR / 'SVM_overlap.pkl'
+    _scaler_path = _MODEL_DIR / 'scaler_overlap.pkl'
+    _le_path     = _MODEL_DIR / 'label_encoder_overlap.pkl'
+
+    if _svm is None and _svm_path.exists():
+        _svm = joblib.load(_svm_path)
+        logger.info("Loaded SVM from %s", _svm_path)
+
+    if _svm_scaler is None and _scaler_path.exists():
+        _svm_scaler = joblib.load(_scaler_path)
+        logger.info("Loaded scaler from %s", _scaler_path)
+
+
+    _svm_le = None   # ← add this at module-level alongside _svm_classes
+    
+    # inside init_models:
+    if _svm_le is None and _le_path.exists():
+        _svm_le = joblib.load(_le_path)
+        _svm_classes = _svm_le.classes_   # still set this too, for logging
+        logger.info("Loaded label encoder, classes: %s", _svm_classes)
+
+
+        
+    else:
+        logger.warning("One or more model files missing — acoustic branch uses heuristic")
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +307,7 @@ def process_audio_chunk(
         new_state,           # dict
     )
     """
-    import pandas as pd
+
 
     if audio_chunk is None:
         return _empty_output(stream_state)
@@ -408,30 +447,41 @@ def _compute_acoustic_proba(
         if _feat_extractor is not None:
             # Resample if needed
             if sample_rate != 16000:
-                import librosa
+                
                 audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=16000)
                 sample_rate = 16000
 
             feats = _feat_extractor.extract_from_array(audio_array, overlap=True)
 
-            # Simple softmax over ZCR/Energy features as acoustic proxy
-            zcr = feats[0]   # ZCR
-            energy = feats[1]  # Energy
 
-            # Heuristic: high energy + low ZCR → anger (negative)
-            #            low energy            → neutral
-            #            moderate              → positive
+            # Use trained Phase 1 SVM if available
+            if _svm is not None and _svm_le is not None:
+
+                feats_2d = feats.reshape(1, -1)
+                if _svm_scaler is not None:
+                    feats_2d = _svm_scaler.transform(feats_2d)
+                proba_raw   = _svm.predict_proba(feats_2d)[0]
+                
+                proba_7class = {_svm_le.classes_[int(i)]: float(p)
+    for i, p in zip(_svm.classes_, proba_raw)}
+
+                
+    
+                return SentimentFusion.collapse_acoustic_proba(proba_7class)
+
+            # Fallback heuristic if SVM not loaded yet
+            zcr = feats[0]
+            energy = feats[1]
             neg_score = float(np.clip(energy * 10 - zcr * 5, 0, 1))
             pos_score = float(np.clip(zcr * 3 - energy * 5, 0, 1))
             neu_score = max(0.0, 1.0 - neg_score - pos_score)
-
             total = neg_score + pos_score + neu_score
             if total > 0:
-                return {
-                    "positive": pos_score / total,
-                    "negative": neg_score / total,
-                    "neutral": neu_score / total,
-                }
+                return {'positive': pos_score / total, 'negative': neg_score / total, 'neutral': neu_score / total}
+
+
+
+    
     except Exception as e:
         logger.debug("Acoustic feature extraction error: %s", e)
 
@@ -504,7 +554,7 @@ def _build_alert_html(
 
 def _empty_output(stream_state: dict) -> tuple:
     """Return no-op outputs when no audio is available."""
-    import pandas as pd
+
     history = stream_state.get("history", [])
     plot_fig = _build_sentiment_plot(history)
     return (
@@ -530,7 +580,6 @@ def process_demo_step(
     Advance the demo by one step, returning the same output signature as
     process_audio_chunk.
     """
-    import pandas as pd
 
     step = DEMO_SEQUENCE[demo_index % len(DEMO_SEQUENCE)]
     text_proba = step["text_proba"]
@@ -749,6 +798,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
             **System**: 75/25 Weighted Fusion (Yurtay et al. 2024) | 
             **ASR**: faster-whisper (medium) | 
             **Text**: oliverguhr/german-sentiment-bert |
+            **Text**: j-hartmann/emotion-english-distilroberta-base (DE→EN) |
             **Acoustic**: PyAudioAnalysis 34 features |
             **Alert logic**: State-change detection (Thesis Design Decision §DD-2)
             """
@@ -833,7 +883,6 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 "history": [],
                 "transcript_buffer": "",
             }
-            import pandas as pd
             empty_plot = _build_sentiment_plot([]) 
             return (
                 {"NEUTRAL": 100.0},

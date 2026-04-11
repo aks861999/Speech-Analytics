@@ -58,7 +58,7 @@ except ImportError:
 # Librosa-based 34-feature fallback
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
+def _librosa_extract_34(audio: np.ndarray, sr: int = 16000, hop_length=512, cmvn: bool = False) -> np.ndarray:
     """
     Extract the same 34 features using librosa when pyAudioAnalysis is
     unavailable. This ensures the codebase is functional even during
@@ -72,13 +72,13 @@ def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
     features = []
 
     # 1. ZCR (1)
-    zcr = librosa.feature.zero_crossing_rate(audio)[0]
+    zcr = librosa.feature.zero_crossing_rate(audio, hop_length=hop_length)[0]
     features.append(float(np.mean(zcr)))
 
     # 2. Short-term energy (1)
     energy = np.array([
-        np.sum(audio[i:i + 512] ** 2)
-        for i in range(0, len(audio), 512)
+        np.sum(audio[i:i + hop_length] ** 2)
+        for i in range(0, len(audio), hop_length)
     ])
     features.append(float(np.mean(energy)))
 
@@ -92,15 +92,15 @@ def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
     features.append(entropy)
 
     # 4. Spectral Centroid (1)
-    centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
+    centroid = librosa.feature.spectral_centroid(y=audio, sr=sr, hop_length=hop_length)[0]
     features.append(float(np.mean(centroid)))
 
     # 5. Spectral Spread (1) — spectral bandwidth
-    spread = librosa.feature.spectral_bandwidth(y=audio, sr=sr)[0]
+    spread = librosa.feature.spectral_bandwidth(y=audio, sr=sr, hop_length=hop_length)[0]
     features.append(float(np.mean(spread)))
 
     # 6. Spectral Entropy (1) — entropy of power spectrum
-    stft = np.abs(librosa.stft(audio)) ** 2
+    stft = np.abs(librosa.stft(audio, hop_length=hop_length)) ** 2
     power = stft.sum(axis=0)
     if power.sum() > 0:
         p = power / power.sum()
@@ -115,15 +115,27 @@ def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
     features.append(float(flux))
 
     # 8. Spectral Rolloff (1)
-    rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sr)[0]
+    rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sr, hop_length=hop_length)[0]
     features.append(float(np.mean(rolloff)))
 
-    # 9. MFCCs 1–13 (13)
-    mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
-    features.extend(float(np.mean(m)) for m in mfccs)
+
+    # 9. MFCCs 1–13 (13) — with optional per-coefficient CMVN before mean
+    mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13, hop_length=hop_length)
+    if cmvn:
+        # Subtract per-coefficient mean and divide by std across frames
+        # This removes channel/speaker bias before collapsing to utterance mean
+        mfcc_mean = np.mean(mfccs, axis=1, keepdims=True)
+        mfcc_std  = np.std(mfccs,  axis=1, keepdims=True) + 1e-8
+        mfccs = (mfccs - mfcc_mean) / mfcc_std
+        # After CMVN the frame-mean is ~0 by construction — what carries signal
+        # is the std of the normalised sequence (how dynamic the coefficient is)
+        features.extend(float(np.std(m)) for m in mfccs)
+    else:
+        features.extend(float(np.mean(m)) for m in mfccs)
+
 
     # 10. Chroma 1–12 (12)
-    chroma = librosa.feature.chroma_stft(y=audio, sr=sr, n_chroma=12)
+    chroma = librosa.feature.chroma_stft(y=audio, sr=sr, n_chroma=12, hop_length=hop_length)
     features.extend(float(np.mean(c)) for c in chroma)
 
     # 11. Chroma Deviation (1) — std across chroma bins, mean over frames
@@ -131,7 +143,8 @@ def _librosa_extract_34(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
     chroma_dev = float(np.mean(np.std(chroma, axis=0)))
     features.append(chroma_dev)
 
-    assert len(features) == 34, f"Expected 34 features, got {len(features)}"
+    expected = 34
+    assert len(features) == expected, f"Expected {expected} features, got {len(features)}"
     return np.array(features, dtype=np.float32)
 
 
@@ -156,7 +169,16 @@ class PyAudioFeatureExtractor:
            "SpectralFlux", "SpectralRolloff"]
         + [f"MFCC_{i+1}" for i in range(13)]
         + [f"Chroma_{i+1}" for i in range(12)]
-        + ["ChromaDeviation"] 
+        + ["ChromaDeviation"]
+    )
+    
+    FEATURE_NAMES_CMVN: list[str] = (
+        ["ZCR", "Energy", "EnergyEntropy"]
+        + ["SpectralCentroid", "SpectralSpread", "SpectralEntropy",
+           "SpectralFlux", "SpectralRolloff"]
+        + [f"MFCC_{i+1}_cvstd" for i in range(13)]
+        + [f"Chroma_{i+1}" for i in range(12)]
+        + ["ChromaDeviation"]
     )
 
     def __init__(
@@ -212,16 +234,14 @@ class PyAudioFeatureExtractor:
 
     # ── librosa fallback extraction ───────────────────────────────────────
 
-    def _extract_librosa(self, audio: np.ndarray) -> np.ndarray:
-        return _librosa_extract_34(audio, sr=self.target_sr)
+    def _extract_librosa(self, audio: np.ndarray, hop_length: int = 512, cmvn: bool = False) -> np.ndarray:
+        return _librosa_extract_34(audio, sr=self.target_sr, hop_length=hop_length, cmvn=cmvn)
+
 
     # ── Public extraction methods ─────────────────────────────────────────
 
-    def extract_file(
-        self,
-        filepath: str | Path,
-        overlap: bool = True,
-    ) -> np.ndarray:
+    def extract_file(self, filepath, overlap: bool = True, cmvn: bool = False) -> np.ndarray:
+
         """
         Extract 34 features from a single audio file.
 
@@ -240,7 +260,9 @@ class PyAudioFeatureExtractor:
         audio, _ = _librosa.load(str(filepath), sr=self.target_sr, mono=True)
 
         if self._use_fallback:
-            return self._extract_librosa(audio)
+            hop = 256 if overlap else 512  # ✅ 256 = 50% overlap at sr=16000
+            return self._extract_librosa(audio, hop_length=hop, cmvn=cmvn)
+
 
         st_win = 0.05
         st_step = 0.025 if overlap else 0.05
@@ -250,7 +272,9 @@ class PyAudioFeatureExtractor:
         self,
         audio: np.ndarray,
         overlap: bool = True,
+        cmvn: bool = False,
     ) -> np.ndarray:
+
         """
         Extract 34 features from a pre-loaded numpy array.
 
@@ -264,7 +288,8 @@ class PyAudioFeatureExtractor:
         np.ndarray shape (34,)
         """
         if self._use_fallback:
-            return self._extract_librosa(audio)
+            hop = 256 if overlap else 512 
+            return self._extract_librosa(audio, hop_length=hop, cmvn=cmvn)
 
         st_win = 0.05
         st_step = 0.025 if overlap else 0.05
@@ -276,7 +301,9 @@ class PyAudioFeatureExtractor:
         filepath_col: str = "processed_filepath",
         label_col: str = "emotion_label_en",
         overlap: bool = True,
+        cmvn: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+
         """
         Extract features for every file in manifest_df.
 
@@ -307,7 +334,7 @@ class PyAudioFeatureExtractor:
                 continue
 
             try:
-                feats = self.extract_file(fpath, overlap=overlap)
+                feats = self.extract_file(fpath, overlap=overlap, cmvn=cmvn)
                 X_rows.append(feats)
                 y_rows.append(str(label))
                 names.append(Path(str(fpath)).name)
@@ -317,8 +344,9 @@ class PyAudioFeatureExtractor:
         X = np.array(X_rows, dtype=np.float32)
         y = np.array(y_rows)
         logger.info(
-            "Extracted features: X=%s, overlap=%s", X.shape, overlap
+            "Extracted features: X=%s, overlap=%s, cmvn=%s", X.shape, overlap, cmvn
         )
+
         return X, y, names
 
     def extract_and_save_arff(
@@ -328,7 +356,9 @@ class PyAudioFeatureExtractor:
         filepath_col: str = "processed_filepath",
         label_col: str = "emotion_label_en",
         overlap: bool = True,
+        cmvn: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
+
         """
         Extract features and save to ARFF format for compatibility with
         pyAudioAnalysis / Weka pipelines.
@@ -351,7 +381,9 @@ class PyAudioFeatureExtractor:
             filepath_col=filepath_col,
             label_col=label_col,
             overlap=overlap,
+            cmvn=cmvn,
         )
+
 
         output_arff_path = Path(output_arff_path)
         ensure_dir(output_arff_path.parent)

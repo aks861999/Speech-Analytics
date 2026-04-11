@@ -8,6 +8,7 @@ Design: Replicates Madanian et al. (2022) exactly.
 """
 
 from __future__ import annotations
+from sklearn.pipeline import Pipeline
 
 import logging
 from pathlib import Path
@@ -166,10 +167,15 @@ class EmotionClassifierSuite:
 
         for clf_name, base_estimator in estimators.items():
             logger.info("─── Running %s [%s] ───", clf_name, overlap_mode)
-            param_grid = self.PARAM_GRIDS[clf_name]
+            param_grid = {f"clf__{k}": v for k, v in self.PARAM_GRIDS[clf_name].items()}
+
+            pipeline = Pipeline([
+                ("scaler", StandardScaler()),
+                ("clf", base_estimator),
+            ])
 
             grid_search = GridSearchCV(
-                estimator=base_estimator,
+                estimator=pipeline,
                 param_grid=param_grid,
                 cv=StratifiedKFold(
                     n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
@@ -183,7 +189,7 @@ class EmotionClassifierSuite:
             # Outer CV for unbiased performance estimate
             outer_cv_results = cross_validate(
                 grid_search,
-                X_scaled,
+                X,
                 y_enc,
                 cv=cv,
                 scoring=["accuracy", "f1_weighted", "f1_macro"],
@@ -202,9 +208,10 @@ class EmotionClassifierSuite:
             )
 
             # Fit best model on full dataset
-            grid_search.fit(X_scaled, y_enc)
+            grid_search.fit(X, y_enc)    
             best_model = grid_search.best_estimator_
             best_params = grid_search.best_params_
+            
 
             self.best_models[clf_name] = best_model
             results_rows.append(
@@ -329,7 +336,7 @@ class EmotionClassifierSuite:
             mlflow.log_param("classifier_type", clf_name)
             mlflow.log_param("overlap", overlap_mode)
             for param_name, param_val in best_params.items():
-                mlflow.log_param(param_name, param_val)
+                mlflow.log_param(param_name.replace("clf__", ""), param_val)
 
             mlflow.log_metric("accuracy", acc)
             mlflow.log_metric("weighted_f1", f1_weighted)

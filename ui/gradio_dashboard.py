@@ -170,7 +170,7 @@ def _build_sentiment_plot(history: list):
 
 def _init_models(config: dict) -> None:
     """Lazy-initialise ML models once at app startup."""
-    global _asr, _text_clf, _feat_extractor, _svm, _svm_scaler, _svm_classes
+    global _asr, _text_clf, _feat_extractor, _svm, _svm_scaler, _svm_classes, _svm_le
 
 
     asr_cfg = config.get("asr", {})
@@ -457,12 +457,13 @@ def _compute_acoustic_proba(
             if _svm is not None and _svm_le is not None:
 
                 feats_2d = feats.reshape(1, -1)
-                if _svm_scaler is not None:
+
+                import sklearn.pipeline
+                if _svm_scaler is not None and not isinstance(_svm, sklearn.pipeline.Pipeline):
                     feats_2d = _svm_scaler.transform(feats_2d)
-                proba_raw   = _svm.predict_proba(feats_2d)[0]
-                
-                proba_7class = {_svm_le.classes_[int(i)]: float(p)
-    for i, p in zip(_svm.classes_, proba_raw)}
+                proba_raw = _svm.predict_proba(feats_2d)[0]
+                _svm_clf_step = _svm.named_steps['clf'] if hasattr(_svm, 'named_steps') else _svm
+                proba_7class = {_svm_le.classes_[int(i)]: float(p) for i, p in zip(_svm_clf_step.classes_, proba_raw)}
 
                 
     

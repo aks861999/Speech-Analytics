@@ -23,6 +23,11 @@ import os
 import sys
 import time
 from pathlib import Path
+# ── Add project root to sys.path ──────────────────────────────────────────
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -32,10 +37,6 @@ from src.utils import get_logger, load_config
 import gradio as gr
 import plotly.graph_objects as go
 import librosa
-# ── Add project root to sys.path ──────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 
@@ -675,6 +676,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
 
     with gr.Blocks(
         title="Speech Analytics Dashboard — Allianz Thesis Prototype",
+        css=css
     ) as demo:
 
         # ── Header ─────────────────────────────────────────────────────────
@@ -836,7 +838,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 fusion_scores_display,
                 stream_state,
             ],
-            stream_every=3.0, 
+            stream_every=stream_every, 
         )
 
         # Demo mode: next step button
@@ -949,7 +951,6 @@ def main():
 
 
     dashboard.launch(
-        css=css,
         theme=gr.themes.Base(),
         server_name=host,
         server_port=port,

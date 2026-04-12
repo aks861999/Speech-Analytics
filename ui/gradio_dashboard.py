@@ -23,6 +23,11 @@ import os
 import sys
 import time
 from pathlib import Path
+
+
+
+
+
 # ── Add project root to sys.path ──────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -38,6 +43,22 @@ import gradio as gr
 import plotly.graph_objects as go
 import librosa
 
+
+
+import shutil as _shutil
+import os as _os
+_orig_shutil_move = _shutil.move
+
+def _win_safe_move(src, dst, copy_function=_shutil.copy2):
+    try:
+        _orig_shutil_move(src, dst, copy_function=copy_function)
+    except (PermissionError, OSError):
+        try:
+            _os.replace(src, dst)
+        except (PermissionError, OSError):
+            pass  # cache move failed; audio already in numpy buffer, safe to skip
+
+_shutil.move = _win_safe_move
 
 
 logger = get_logger(__name__)

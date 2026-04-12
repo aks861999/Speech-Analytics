@@ -78,14 +78,14 @@ classifiers:
 
 # ── ASR ───────────────────────────────────────────────────────────────────────
 asr:
-  model_size: "medium"     # 769M params; use "base" for CPU-only testing
+  model_size: "small" 
   device: "auto"           # "cuda" | "cpu" | "auto"
-  compute_type: "float16"  # "int8" for CPU fallback
+  compute_type: "int8"  # "int8" for CPU fallback
   language_emodb: "de"
   language_ravdess: "en"
   task: "transcribe"
   word_timestamps: false
-  beam_size: 5
+  beam_size: 3
   batch_size: 8
 
 # ── Text Classifier ───────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ mlflow:
 
 # ── Gradio Dashboard ──────────────────────────────────────────────────────────
 gradio:
-  stream_every: 3.0          # seconds per audio chunk
+  stream_every: 1.5          # seconds per audio chunk
   alert_threshold: 0.5       # P(negative) threshold (used only for reference; state-change is primary)
   sentiment_score_positive_threshold: 0.3
   sentiment_score_negative_threshold: -0.3

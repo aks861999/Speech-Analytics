@@ -69,17 +69,27 @@ def _normalize_label(label: str, label_map: dict[str, str]) -> str:
 
 def _scores_to_dict(scores: list[dict], label_map: dict[str, str]) -> dict[str, float]:
     """
-    Convert HuggingFace return_all_scores output to a normalized probability dict.
-
-    Returns
-    -------
-    dict with keys: 'positive', 'negative', 'neutral' (summing to ~1.0)
+    Convert HuggingFace pipeline output to a normalized probability dict.
+    Handles all output formats across transformers versions:
+      - [{label, score}, {label, score}, ...]   flat list  (top_k=None, single input)
+      - [[{label, score}, ...]]                 doubly nested (top_k=None in init)
+      - {label: str, score: float}              single dict  (top_k=1, default)
     """
+    # Unwrap double nesting: [[{...},...]] → [{...},...]
+    if isinstance(scores, list) and scores and isinstance(scores[0], list):
+        scores = scores[0]
+
+    # Wrap bare dict: {label, score} → [{label, score}]
+    if isinstance(scores, dict):
+        scores = [scores]
+
     result = {"positive": 0.0, "negative": 0.0, "neutral": 0.0}
     for item in scores:
+        if not isinstance(item, dict):
+            continue
         key = _normalize_label(item["label"], label_map)
         result[key] = float(item["score"])
-    # Re-normalize to ensure sum == 1 (floating point)
+
     total = sum(result.values())
     if total > 0:
         result = {k: v / total for k, v in result.items()}
@@ -128,7 +138,6 @@ class GermanSentimentClassifier:
         self._pipeline = hf_pipeline(
             "text-classification",
             model=model_name,
-            return_all_scores=True,
             device=self._device,
         )
         logger.info("Text classifier loaded.")
@@ -150,7 +159,8 @@ class GermanSentimentClassifier:
             return {"positive": 1 / 3, "negative": 1 / 3, "neutral": 1 / 3}
 
         try:
-            scores = self._pipeline(text[:512])[0]  # truncate to 512 tokens
+            # top_k=None at call time: returns all label scores regardless of transformers version
+            scores = self._pipeline(text[:512], top_k=None)
             return _scores_to_dict(scores, _GERMAN_LABEL_MAP)
         except Exception as exc:
             logger.error("Text classification failed: %s", exc)
@@ -185,7 +195,8 @@ class GermanSentimentClassifier:
             clean_batch = [t[:512] if (t and t.strip()) else "unbekannt" for t in batch]
 
             try:
-                batch_scores = self._pipeline(clean_batch)
+                batch_scores = self._pipeline(clean_batch, top_k=None)
+                # ✅ FIXED
                 for j, scores in enumerate(batch_scores):
                     if texts[i + j] and texts[i + j].strip():
                         results.append(_scores_to_dict(scores, _GERMAN_LABEL_MAP))
@@ -267,7 +278,6 @@ class EnglishSentimentClassifier(GermanSentimentClassifier):
         self._pipeline = hf_pipeline(
             "text-classification",
             model=model_name,
-            return_all_scores=True,
             device=self._device,
         )
         logger.info("English classifier loaded.")
@@ -276,7 +286,7 @@ class EnglishSentimentClassifier(GermanSentimentClassifier):
         if not text or not text.strip():
             return {"positive": 1 / 3, "negative": 1 / 3, "neutral": 1 / 3}
         try:
-            scores = self._pipeline(text[:512])[0]
+            scores = self._pipeline(text[:512], top_k=None)
             return _scores_to_dict(scores, _CARDIFF_LABEL_MAP)
         except Exception as exc:
             logger.error("English classification failed: %s", exc)
@@ -292,7 +302,7 @@ class EnglishSentimentClassifier(GermanSentimentClassifier):
             batch = texts[i: i + batch_size]
             clean_batch = [t[:512] if (t and t.strip()) else "unknown" for t in batch]
             try:
-                batch_scores = self._pipeline(clean_batch)
+                batch_scores = self._pipeline(clean_batch, top_k=None)
                 for j, scores in enumerate(batch_scores):
                     if texts[i + j] and texts[i + j].strip():
                         results.append(_scores_to_dict(scores, _CARDIFF_LABEL_MAP))
@@ -350,7 +360,6 @@ class GermanEmotionClassifier:
         self._emotion_clf = hf_pipeline(
             "text-classification",
             model="j-hartmann/emotion-english-distilroberta-base",
-            return_all_scores=True,
             device=self._device,
         )
         logger.info("GermanEmotionClassifier ready.")
@@ -374,7 +383,7 @@ class GermanEmotionClassifier:
 
 
             
-            raw = self._emotion_clf(translated[:512])
+            raw = self._emotion_clf(translated[:512], top_k=None)
             # Unwrap nesting: pipeline returns [[{...},...]] or [{...},...]
             if isinstance(raw[0], list):
                 scores = raw[0]   # batch wrapper present
@@ -395,8 +404,27 @@ class GermanEmotionClassifier:
             return {'positive': 1/3, 'negative': 1/3, 'neutral': 1/3}
 
     def predict_batch(self, texts: list[str], batch_size: int = 32) -> list[dict[str, float]]:
-        return [self.predict_proba(t) for t in texts]
-
+        results = []
+        for i in range(0, len(texts), batch_size):
+            batch = [t[:512] if (t and t.strip()) else "unbekannt" for t in texts[i:i + batch_size]]
+            inputs = self._tokenizer(batch, return_tensors="pt", padding=True, truncation=True)
+            if self._device == 0:
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+            translated_tokens = self._translator.generate(**inputs)
+            translated = [
+                self._tokenizer.decode(tok, skip_special_tokens=True)
+                for tok in translated_tokens
+            ]
+            raw_batch = self._emotion_clf(translated, top_k=None)
+            for raw in raw_batch:
+                scores = raw[0] if isinstance(raw[0], list) else raw
+                collapsed = {"positive": 0.0, "negative": 0.0, "neutral": 0.0}
+                for item in scores:
+                    three = self.EMOTION_3CLASS_MAP.get(item["label"].lower(), "neutral")
+                    collapsed[three] += float(item["score"])
+                total = sum(collapsed.values())
+                results.append({k: v / total for k, v in collapsed.items()} if total > 0 else collapsed)
+        return results
 
 
 

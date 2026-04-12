@@ -79,7 +79,8 @@ except Exception:
     _ASR_AVAILABLE = False
 
 try:
-    from src.text_classifier import GermanEmotionClassifier
+    from src.text_classifier import GermanSentimentClassifier   # oliverguhr — German-native, no translation
+    from src.text_classifier import GermanEmotionClassifier     # j-hartmann — kept for reference/offline use
     _TEXT_CLF_AVAILABLE = True
 except Exception:
     _TEXT_CLF_AVAILABLE = False
@@ -96,7 +97,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _asr: Optional["FasterWhisperASR"] = None
-_text_clf: Optional["GermanEmotionClassifier"] = None
+_text_clf: Optional["GermanSentimentClassifier"] = None
 _feat_extractor: Optional["PyAudioFeatureExtractor"] = None
 _fusion = SentimentFusion(text_weight=0.75)
 _svm = None           # loaded from models/phase1/
@@ -183,14 +184,20 @@ def _init_models(config: dict) -> None:
                 model_size=asr_cfg.get("model_size", "base"),  # use "base" for speed in demo
                 device=asr_cfg.get("device", "auto"),
             )
-            logger.info("ASR model loaded.")
+            logger.info("ASR model loaded. Attr: %s",
+                        "model" if hasattr(_asr, "model") else
+                        "_model" if hasattr(_asr, "_model") else "UNKNOWN — transcribe_chunk fallback will be used")
         except Exception as e:
             logger.warning("ASR model load failed: %s", e)
 
     if _TEXT_CLF_AVAILABLE and _text_clf is None:
         try:
-            _text_clf = GermanEmotionClassifier(device='auto')
-            logger.info("Text classifier loaded.")
+            # GermanSentimentClassifier: oliverguhr/german-sentiment-bert
+            # German-native → no Helsinki DE→EN translation step
+            # 3-class output (positive/negative/neutral) — exactly what fusion needs
+            # ~2-3x faster per chunk than the translate+classify pipeline
+            _text_clf = GermanSentimentClassifier(device='auto')
+            logger.info("Text classifier loaded: GermanSentimentClassifier (oliverguhr, German-native, 3-class)")
         except Exception as e:
             logger.warning("Text classifier load failed: %s", e)
 
@@ -216,21 +223,29 @@ def _init_models(config: dict) -> None:
     # inside init_models:
     if _svm_le is None and _le_path.exists():
         _svm_le = joblib.load(_le_path)
-        _svm_classes = _svm_le.classes_   # still set this too, for logging
+        _svm_classes = _svm_le.classes_
         logger.info("Loaded label encoder, classes: %s", _svm_classes)
 
-
-        
-    else:
-        logger.warning("One or more model files missing — acoustic branch uses heuristic")
-
+    # Only warn if the SVM itself is still missing after attempting load
+    if _svm is None:
+        logger.warning("SVM model not found — acoustic branch uses heuristic fallback")
 
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Demo mode samples (simulated emotion sequence for thesis presentation)
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Dashboard CSS (module-level so main() can pass it to launch()) ────────────
+_DASHBOARD_CSS = """
+.gradio-container { font-family: 'Inter', sans-serif; }
+.sentiment-positive { color: #22c55e; font-weight: bold; }
+.sentiment-negative { color: #ef4444; font-weight: bold; }
+.sentiment-neutral  { color: #94a3b8; font-weight: bold; }
+.header-bar {
+    background: linear-gradient(90deg, #1e3a8a, #1d4ed8);
+    color: white; padding: 20px 30px;
+    border-radius: 10px; margin-bottom: 20px;
+}
+"""
 
 DEMO_SEQUENCE = [
     {
@@ -275,6 +290,33 @@ DEMO_SEQUENCE = [
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio processing: state machine
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _deduplicate_transcript(previous: str, new: str) -> str:
+    """
+    Strip the portion of `new` that was already in `previous`.
+    Whisper re-transcribes the full ring buffer every chunk, so the
+    beginning of each new transcript overlaps with the previous one.
+    Punctuation is stripped before comparison so "fühle." matches "fühle".
+    """
+    if not previous or not new:
+        return new
+
+    import string
+    def _clean(w: str) -> str:
+        return w.strip(string.punctuation).lower()
+
+    prev_words = previous.split()
+    new_words  = new.split()
+    prev_clean = [_clean(w) for w in prev_words]
+    new_clean  = [_clean(w) for w in new_words]
+
+    max_overlap = min(len(prev_clean), len(new_clean))
+    for overlap in range(max_overlap, 0, -1):
+        if prev_clean[-overlap:] == new_clean[:overlap]:
+            return " ".join(new_words[overlap:]).strip()
+
+    return new
+
 
 def process_audio_chunk(
     audio_chunk,
@@ -328,11 +370,47 @@ def process_audio_chunk(
         else:
             audio_array = audio_array.astype(np.float32)
 
+    # ── Ring buffer: accumulate audio, always pass last 4s to Whisper ─────
+    # Resample FIRST so the buffer is always uniformly 16kHz
+    if sample_rate != 16000:
+        audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
+
+    audio_buffer = stream_state.get("audio_buffer", [])
+    audio_buffer.append(audio_array)
+
+    _MAX_BUFFER_SAMPLES = 4 * 16000  # 4 seconds at 16kHz
+    combined = np.concatenate(audio_buffer)
+    if len(combined) > _MAX_BUFFER_SAMPLES:
+        combined = combined[-_MAX_BUFFER_SAMPLES:]
+    stream_state = dict(stream_state)
+    stream_state["audio_buffer"] = [combined]   # store as single flat array
+
+    asr_audio = combined   # full buffer → Whisper gets full context
+
     # ── ASR ────────────────────────────────────────────────────────────────
+    # Call faster-whisper directly with numpy array — avoids writing temp wav
+    # files to disk, which causes WinError 32 (file locked) on Windows when
+    # Gradio's cache manager tries to move the same temp file our ASR holds open.
     transcript = None
     if _asr is not None:
         try:
-            transcript = _asr.transcribe_chunk(audio_array, sample_rate=sample_rate, language=language)
+            # faster-whisper WhisperModel.transcribe() accepts float32 numpy arrays natively.
+            # getattr handles both .model and ._model depending on how FasterWhisperASR wraps it.
+            _model = getattr(_asr, "model", None) or getattr(_asr, "_model", None)
+            if _model is not None:
+                segments, _ = _model.transcribe(
+                    asr_audio,
+                    language=language,
+                    task="transcribe",
+                    beam_size=3,       # 3 is fast enough on CPU; 5 adds latency with little gain
+                    vad_filter=True,   # skip silent segments — big speedup on CPU
+                    vad_parameters=dict(min_silence_duration_ms=300),
+                )
+                transcript = " ".join(seg.text.strip() for seg in segments).strip()
+            else:
+                # Fallback if model attribute name differs — still avoids temp file via chunk
+                transcript = _asr.transcribe_chunk(asr_audio, sample_rate=16000, language=language)
         except Exception as e:
             logger.warning("ASR chunk failed: %s", e)
 
@@ -347,6 +425,8 @@ def process_audio_chunk(
         text_proba = {"positive": 0.33, "negative": 0.33, "neutral": 0.34}
 
     # ── Acoustic feature extraction → 3-class probability ─────────────────
+    # Use only the latest chunk (not the full 4s buffer) — acoustic features
+    # like energy/ZCR should reflect current moment, not accumulated history.
     acoustic_proba_3class = _compute_acoustic_proba(audio_array, sample_rate)
 
     # ── Fusion ────────────────────────────────────────────────────────────
@@ -376,10 +456,12 @@ def process_audio_chunk(
         ts_msg = f"[{now}] ✅  Sentiment recovered to {predicted_class.upper()}"
         alert_log = ts_msg + "\n" + alert_log
 
-    # Update transcript buffer
+    # Update transcript buffer — deduplicate so ring-buffer re-transcriptions don't repeat
     if transcript and "[Audio" not in transcript:
-        transcript_buffer = transcript_buffer + " " + transcript
-        transcript_buffer = transcript_buffer.strip()[-800:]  # keep last 800 chars
+        novel = _deduplicate_transcript(transcript_buffer, transcript)
+        if novel:
+            transcript_buffer = (transcript_buffer + " " + novel).strip()
+        transcript_buffer = transcript_buffer[-800:]
 
     # Update history
     history.append(
@@ -398,13 +480,15 @@ def process_audio_chunk(
         "alert_log": alert_log,
         "history": history,
         "transcript_buffer": transcript_buffer,
+        "audio_buffer": stream_state.get("audio_buffer", []),  # carry buffer forward!
+        "audio_sr": 16000,
     }
 
     # ── Build outputs ──────────────────────────────────────────────────────
 
-    # gr.Label input: dict of {label: confidence}
+    # gr.Label expects raw 0-1 probabilities — it renders them as % automatically
     confidence_pct = {
-        k.upper(): round(v * 100, 1) for k, v in fused_proba.items()
+        k.upper(): round(v, 4) for k, v in fused_proba.items()
     }
 
     # Alert HTML
@@ -559,7 +643,7 @@ def _empty_output(stream_state: dict) -> tuple:
     history = stream_state.get("history", [])
     plot_fig = _build_sentiment_plot(history)
     return (
-        {"NEUTRAL": 100.0},
+        {"NEUTRAL": 1.0},
         stream_state.get("transcript_buffer", ""),
         plot_fig,
         _build_alert_html(False, "neutral"),
@@ -619,7 +703,8 @@ def process_demo_step(
         "transcript_buffer": step["transcript"],
     }
 
-    confidence_pct = {k.upper(): round(v * 100, 1) for k, v in fused_proba.items()}
+    # gr.Label expects raw 0-1 probabilities — it renders them as % automatically
+    confidence_pct = {k.upper(): round(v, 4) for k, v in fused_proba.items()}
     alert_html = _build_alert_html(alert_active, predicted_class, recovery)
     plot_fig = _build_sentiment_plot(history)
     fusion_scores = {
@@ -676,7 +761,8 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
 
     with gr.Blocks(
         title="Speech Analytics Dashboard — Allianz Thesis Prototype",
-        css=css
+        theme=gr.themes.Base(),
+        css=_DASHBOARD_CSS,
     ) as demo:
 
         # ── Header ─────────────────────────────────────────────────────────
@@ -697,6 +783,8 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 "alert_log": "",
                 "history": [],
                 "transcript_buffer": "",
+                "audio_buffer": [],      # ring buffer: accumulates raw audio chunks
+                "audio_sr": 16000,       # sample rate of buffered audio
             }
         )
         demo_index = gr.State(0)
@@ -838,7 +926,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 fusion_scores_display,
                 stream_state,
             ],
-            stream_every=stream_every, 
+            stream_every=1.5,   # trigger every 1.5s — lower latency than 3s
         )
 
         # Demo mode: next step button
@@ -884,10 +972,12 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 "alert_log": "",
                 "history": [],
                 "transcript_buffer": "",
+                "audio_buffer": [],
+                "audio_sr": 16000,
             }
             empty_plot = _build_sentiment_plot([]) 
             return (
-                {"NEUTRAL": 100.0},
+                {"NEUTRAL": 1.0},
                 "",
                 empty_plot,
                 _build_alert_html(False, "neutral"),
@@ -922,6 +1012,10 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
+    # Suppress the HF Hub unauthenticated request warning — not needed for local inference
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # avoids tokenizer fork warning on Windows
+
     try:
         config = load_config("configs/config.yaml")
     except FileNotFoundError:
@@ -935,26 +1029,16 @@ def main():
     dashboard = build_dashboard(config)
     logger.info("Launching Gradio dashboard on http://%s:%d", host, port)
 
-    css = """
-    .gradio-container { font-family: 'Inter', sans-serif; }
-    .sentiment-positive { color: #22c55e; font-weight: bold; }
-    .sentiment-negative { color: #ef4444; font-weight: bold; }
-    .sentiment-neutral  { color: #94a3b8; font-weight: bold; }
-    .header-bar {
-        background: linear-gradient(90deg, #1e3a8a, #1d4ed8);
-        color: white; padding: 20px 30px;
-        border-radius: 10px; margin-bottom: 20px;
-    }
-    """
+
 
 
 
 
     dashboard.launch(
-        theme=gr.themes.Base(),
         server_name=host,
         server_port=port,
         share=False,
+        show_api=False,
     )
 
 

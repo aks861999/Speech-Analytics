@@ -101,6 +101,7 @@ _fusion = SentimentFusion(text_weight=0.75)
 _svm = None           # loaded from models/phase1/
 _svm_scaler = None    # loaded from models/phase1/
 _svm_classes = None
+_svm_le = None
 
 
 
@@ -196,7 +197,7 @@ def _init_models(config: dict) -> None:
         _feat_extractor = PyAudioFeatureExtractor(target_sr=16000)
 
     import joblib
-    global _svm, _svm_scaler, _svm_classes
+    global _svm, _svm_scaler, _svm_classes, _svm_le
     _MODEL_DIR   = _PROJECT_ROOT / 'models' / 'phase1'
     _svm_path    = _MODEL_DIR / 'SVM_overlap.pkl'
     _scaler_path = _MODEL_DIR / 'scaler_overlap.pkl'
@@ -209,9 +210,7 @@ def _init_models(config: dict) -> None:
     if _svm_scaler is None and _scaler_path.exists():
         _svm_scaler = joblib.load(_scaler_path)
         logger.info("Loaded scaler from %s", _scaler_path)
-
-
-    _svm_le = None   # ← add this at module-level alongside _svm_classes
+    
     
     # inside init_models:
     if _svm_le is None and _le_path.exists():

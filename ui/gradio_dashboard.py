@@ -947,7 +947,7 @@ def build_dashboard(config: Optional[dict] = None) -> "gr.Blocks":
                 fusion_scores_display,
                 stream_state,
             ],
-            stream_every=1.5,   # trigger every 1.5s — lower latency than 3s
+            stream_every=3,   # trigger every 3s
         )
 
         # Demo mode: next step button

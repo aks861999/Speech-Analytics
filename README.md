@@ -1,6 +1,5 @@
 # Speech Analytics System for Emotions in Employee–Customer Interactions
 
-**Allianz Thesis Prototype** | Master Thesis | KIT / BHT Berlin  
 **Author**: Akash Biswas | 2026  
 **Research Question**: *How should a speech analytics system for the analysis of emotions in employee–customer interactions be designed?*
 
@@ -8,7 +7,7 @@
 
 ## Overview
 
-This system implements a 3-phase speech analytics pipeline targeting the German insurance call-center context (Allianz). It extends and fills the gaps of two prior papers:
+This system implements a 3-phase speech analytics pipeline targeting the German insurance call-center context. It extends and fills the gaps of two prior papers:
 
 | Prior Work | Gap | This System |
 |---|---|---|
@@ -124,7 +123,7 @@ fused, predicted = fusion.weighted_fusion(
 ### 5. Launch Dashboard (Phase 3)
 
 ```bash
-cd speech-analytics-allianz
+cd speech-analytics
 python ui/gradio_dashboard.py
 # Open http://localhost:7860
 ```
@@ -134,7 +133,7 @@ python ui/gradio_dashboard.py
 ## Project Structure
 
 ```
-speech-analytics-allianz/
+speech-analytics
 ├── configs/
 │   └── config.yaml                ← All hyperparameters and paths
 ├── data/
@@ -181,7 +180,7 @@ Alert fires when sentiment **transitions** to negative (not when P(negative) > t
 75/25 text/acoustic split follows Yurtay's validated result. Ablation study over 60/40, 75/25, 90/10 provides German-context empirical evidence.
 
 ### DD-4 — Why EMO-DB
-The only publicly available German emotional speech corpus at scale. EMO-DB's acted nature is acknowledged as a limitation; spontaneous Allianz call recordings are recommended for future work.
+The only publicly available German emotional speech corpus at scale. EMO-DB's acted nature is acknowledged as a limitation; spontaneous call recordings are recommended for future work.
 
 ---
 

@@ -167,7 +167,7 @@ speech-analytics
 
 ---
 
-## Key Design Decisions (Thesis Contributions)
+## Key Design Decisions
 
 ### DD-1 — 7-class vs. 3-class
 For call-center deployment, 7-class emotion is impractical for agents. Following Yurtay et al.'s 3-class scheme:  
@@ -213,7 +213,7 @@ mlflow server \
   --host 0.0.0.0 --port 5000
 ```
 
-Open http://localhost:5000 to view experiment comparison tables for the thesis.
+Open http://localhost:5000 to view experiment comparison tables.
 
 ---
 
